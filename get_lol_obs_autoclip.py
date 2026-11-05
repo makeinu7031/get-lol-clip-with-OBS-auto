@@ -2,6 +2,8 @@
 
 試合中に Live Client Data API を監視し、自分のキル/アシスト/マルチキルなどが
 起きたら、OBS のリプレイバッファを保存する。
+- 1キル: 検出から15秒後に保存（前後15秒目安）
+- マルチキル: 最後のキルから30秒後に保存
 """
 import json, time, datetime, urllib3
 import requests
@@ -14,7 +16,8 @@ CFG_PATH = os.path.join(DIR, "config.json")
 DEFAULT = {
     "obs_host": "localhost", "obs_port": 4455, "obs_password": "",
     "my_name": "",           # 空なら自動取得。動かない時は ゲーム名(タグなし)
-    "post_sec": 4,           # 最後のイベントから何秒後に保存するか
+    "post_sec_single": 15,   # 1キルの場合、検出から何秒後に保存するか
+    "post_sec_multi": 30,    # マルチキルの場合、最後のキルから何秒後に保存するか
     "save_assist": True,     # アシストでも保存
     "save_objectives": True, # 自チームのバロン/ドラゴン/エースで保存
     "split_by_match": True,  # 試合ごとのフォルダに分けて保存
@@ -28,7 +31,9 @@ else:
     json.dump(cfg, open(CFG_PATH, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
     print("config.json を保存しました")
 OBS_HOST, OBS_PORT, OBS_PASSWORD = cfg["obs_host"], cfg["obs_port"], cfg["obs_password"]
-MY_NAME, POST_SEC = cfg["my_name"], cfg["post_sec"]
+MY_NAME = cfg["my_name"]
+POST_SEC_SINGLE = cfg.get("post_sec_single", 15)
+POST_SEC_MULTI = cfg.get("post_sec_multi", 30)
 SAVE_ASSIST, SAVE_OBJECTIVES = cfg["save_assist"], cfg["save_objectives"]
 SPLIT = cfg["split_by_match"]
 LOG_FILE = os.path.join(DIR, "clips_log.jsonl")
@@ -98,13 +103,18 @@ def judge(e, me, team_cache):
                 return ("バロン" if n == "BaronKill" else "ドラゴン") if p.get("team") == team_cache() else None
     return None
 
+def is_multi_label(lab):
+    return lab and any(x in lab for x in ("ダブル", "トリプル", "クアドラ", "ペンタ", "マルチ"))
+
 def main():
     cl = obs.ReqClient(host=OBS_HOST, port=OBS_PORT, password=OBS_PASSWORD, timeout=5)
     if not cl.get_replay_buffer_status().output_active:
         cl.start_replay_buffer(); print("リプレイバッファを開始しました")
     print("OBS接続OK。LoLの試合開始を待っています... (Ctrl+Cで終了)")
+    print(f"設定: 1キル={POST_SEC_SINGLE}s後 / マルチ={POST_SEC_MULTI}s後に保存")
     seen, pending, labels, me, team, last_msg = -1, None, [], None, None, ""
     folder, count = "", 0
+    current_post = POST_SEC_SINGLE
     while True:
         try:
             if me is None:
@@ -118,19 +128,30 @@ def main():
                 seen = e["EventID"]
                 lab = judge(e, me, lambda: team)
                 if lab:
-                    labels.append((lab, round(e["EventTime"], 1))); pending = time.time()
-                    print(f"[{e['EventTime']:.0f}s] {lab} を検出")
-            if pending and time.time() - pending >= POST_SEC:
+                    labels.append((lab, round(e["EventTime"], 1)))
+                    pending = time.time()
+                    # マルチなら長め、1キルなら短め。続いたら最後のタイマーを更新
+                    if is_multi_label(lab):
+                        current_post = POST_SEC_MULTI
+                    else:
+                        # 既存のマルチシリーズがあれば長めを優先
+                        if any(is_multi_label(l) for l, _ in labels):
+                            current_post = POST_SEC_MULTI
+                        else:
+                            current_post = POST_SEC_SINGLE
+                    print(f"[{e['EventTime']:.0f}s] {lab} を検出 (保存まで{current_post}s)")
+            if pending and time.time() - pending >= current_post:
                 cl.save_replay_buffer(); time.sleep(1.0)
                 path = cl.get_last_replay_buffer_replay().saved_replay_path
                 count += 1
                 if SPLIT: path = move_clip(path, folder, count, labels)
                 rec = {"saved_at": datetime.datetime.now().isoformat(timespec="seconds"),
-                       "file": path, "events": labels}
+                       "file": path, "events": labels, "post_sec": current_post}
                 open(LOG_FILE, "a", encoding="utf-8").write(json.dumps(rec, ensure_ascii=False) + "\n")
-                print("保存:", path); pending, labels = None, []
+                print("保存:", path); pending, labels = None, []; current_post = POST_SEC_SINGLE
         except (requests.exceptions.RequestException, ValueError, AttributeError) as ex:
             me, pending, labels = None, None, []   # 試合外: 待機
+            current_post = POST_SEC_SINGLE
             msg = str(ex)[:120]
             if msg != last_msg:
                 print("待機中:", msg); last_msg = msg
