@@ -185,7 +185,6 @@ def main():
     )
     seen, pending, labels, me, team, last_msg = -1, None, [], None, None, ""
     folder, count = "", 0
-    current_post = POST_SEC_SINGLE
     while True:
         try:
             if me is None:
@@ -225,10 +224,9 @@ def main():
                        "file": path, "events": labels, "post_sec": current_post,
                        "pre_sec": pre_sec, "clip_sec": clip_len, "multi": is_multi_clip}
                 open(LOG_FILE, "a", encoding="utf-8").write(json.dumps(rec, ensure_ascii=False) + "\n")
-                print("保存:", path); pending, labels = None, []; current_post = POST_SEC_SINGLE
+                print("保存:", path); pending, labels = None, []
         except (requests.exceptions.RequestException, ValueError, AttributeError) as ex:
             me, pending, labels = None, None, []   # 試合外: 待機
-            current_post = POST_SEC_SINGLE
             msg = str(ex)[:120]
             if msg != last_msg:
                 print("待機中:", msg); last_msg = msg

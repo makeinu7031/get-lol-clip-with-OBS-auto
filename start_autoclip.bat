@@ -27,7 +27,5 @@ if errorlevel 1 (
   echo 必要なライブラリをインストールします...
   python -m pip install requests obsws-python
 )
-
-echo スクリプトを起動します...
-python get_lol_obs_autoclip.py
+python lol_obs_autoclip.py
 pause
