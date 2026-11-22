@@ -21,6 +21,7 @@ DEFAULT = {
     "pre_sec_single": 15,    # 単キル: 検知より前に入れたい秒数
     "pre_sec_multi": 45,     # マルチ: 最後の検知より前に入れたい秒数
     "save_assist": True,     # アシストでも保存
+    "assist_only_support": False,  # true なら UTILITY の試合だけアシスト保存
     "save_objectives": True, # 自チームのバロン/ドラゴン/エースで保存
     "split_by_match": True,  # 試合ごとのフォルダに分けて保存
 }
@@ -54,7 +55,13 @@ PRE_SEC_SINGLE = _read_pre_sec(False)
 PRE_SEC_MULTI = _read_pre_sec(True)
 CLIP_SEC_SINGLE = PRE_SEC_SINGLE + POST_SEC_SINGLE
 CLIP_SEC_MULTI = PRE_SEC_MULTI + POST_SEC_MULTI
-SAVE_ASSIST, SAVE_OBJECTIVES = cfg["save_assist"], cfg["save_objectives"]
+SAVE_ASSIST = cfg["save_assist"]
+ASSIST_ONLY_SUPPORT = cfg.get("assist_only_support", False)
+SAVE_OBJECTIVES = cfg["save_objectives"]
+POSITION_JA = {
+    "TOP": "トップ", "JUNGLE": "ジャングル", "MIDDLE": "ミッド",
+    "BOTTOM": "ボット", "UTILITY": "サポート", "NONE": "ロールなし",
+}
 TRIM_WARNED = False
 SPLIT = cfg["split_by_match"]
 LOG_FILE = os.path.join(DIR, "clips_log.jsonl")
@@ -78,10 +85,28 @@ def short(n):  # "名前#タグ" -> "名前"
 def my_name():
     return short(MY_NAME or get("activeplayername"))
 
-def my_team(me):
+def my_player(me):
     for p in get("playerlist"):
         if short(p.get("riotIdGameName") or p.get("summonerName")) == me:
-            return p.get("team")
+            return p
+    return None
+
+def my_team(me):
+    p = my_player(me)
+    return p.get("team") if p else None
+
+def my_position(me):
+    p = my_player(me)
+    if not p:
+        return None
+    return p.get("position") or "NONE"
+
+def assist_enabled_for_match(position):
+    if not SAVE_ASSIST:
+        return False
+    if not ASSIST_ONLY_SUPPORT:
+        return True
+    return position == "UTILITY"
 
 def match_name(me):
     """試合フォルダ名: 開始日時_チャンピオン"""
@@ -107,12 +132,12 @@ def move_clip(path, folder, n, labels):
         except OSError: time.sleep(0.5)
     return path
 
-def judge(e, me, team_cache):
+def judge(e, me, team_cache, save_assist):
     """イベントを保存対象か判定。(ラベル) or None"""
     n = e["EventName"]
     if n == "ChampionKill":
         if short(e.get("KillerName")) == me: return "キル"
-        if SAVE_ASSIST and me in [short(a) for a in e.get("Assisters", [])]: return "アシスト"
+        if save_assist and me in [short(a) for a in e.get("Assisters", [])]: return "アシスト"
     elif n == "Multikill" and short(e.get("KillerName")) == me:
         return {2: "ダブル", 3: "トリプル", 4: "クアドラ", 5: "ペンタ"}.get(e.get("KillStreak"), "マルチ") + "キル"
     elif SAVE_OBJECTIVES and n in ("DragonKill", "BaronKill", "Ace"):
@@ -179,24 +204,37 @@ def main():
     if not cl.get_replay_buffer_status().output_active:
         cl.start_replay_buffer(); print("リプレイバッファを開始しました")
     print("OBS接続OK。LoLの試合開始を待っています... (Ctrl+Cで終了)")
+    assist_cfg = "オフ"
+    if SAVE_ASSIST:
+        assist_cfg = "サポート時のみ" if ASSIST_ONLY_SUPPORT else "常に"
     print(
         f"設定: 単=検知の前{PRE_SEC_SINGLE}s+後{POST_SEC_SINGLE}s / "
-        f"マ=前{PRE_SEC_MULTI}s+後{POST_SEC_MULTI}s (OBSバッファ {replay_boot}s)"
+        f"マ=前{PRE_SEC_MULTI}s+後{POST_SEC_MULTI}s (OBSバッファ {replay_boot}s) / "
+        f"アシスト={assist_cfg}"
     )
-    seen, pending, labels, me, team, last_msg = -1, None, [], None, None, ""
+    seen, pending, labels, me, team, save_assist, last_msg = -1, None, [], None, None, False, ""
     folder, count = "", 0
+    current_post = POST_SEC_SINGLE
     while True:
         try:
             if me is None:
                 me = my_name(); team = my_team(me)
+                pos = my_position(me) or "NONE"
+                save_assist = assist_enabled_for_match(pos)
                 folder = match_name(me); count = 0
-                print(f"プレイヤー: {me} / チーム: {team} / フォルダ: {folder}"); seen = -1
+                pos_label = POSITION_JA.get(pos, pos)
+                assist_note = "有効" if save_assist else "無効"
+                if SAVE_ASSIST and ASSIST_ONLY_SUPPORT and not save_assist:
+                    assist_note = f"無効（{pos_label}・サポート以外）"
+                print(f"プレイヤー: {me} / ポジション: {pos_label} ({pos}) / チーム: {team}")
+                print(f"フォルダ: {folder} / この試合のアシスト保存: {assist_note}")
+                seen = -1
             events = get("eventdata").get("Events", [])
             if events and events[-1]["EventID"] < seen: seen = -1; me = None; continue  # 新しい試合
             for e in events:
                 if e["EventID"] <= seen: continue
                 seen = e["EventID"]
-                lab = judge(e, me, lambda: team)
+                lab = judge(e, me, lambda: team, save_assist)
                 if lab:
                     labels.append((lab, round(e["EventTime"], 1)))
                     pending = time.time()
@@ -224,9 +262,10 @@ def main():
                        "file": path, "events": labels, "post_sec": current_post,
                        "pre_sec": pre_sec, "clip_sec": clip_len, "multi": is_multi_clip}
                 open(LOG_FILE, "a", encoding="utf-8").write(json.dumps(rec, ensure_ascii=False) + "\n")
-                print("保存:", path); pending, labels = None, []
+                print("保存:", path); pending, labels = None, []; current_post = POST_SEC_SINGLE
         except (requests.exceptions.RequestException, ValueError, AttributeError) as ex:
             me, pending, labels = None, None, []   # 試合外: 待機
+            current_post = POST_SEC_SINGLE
             msg = str(ex)[:120]
             if msg != last_msg:
                 print("待機中:", msg); last_msg = msg

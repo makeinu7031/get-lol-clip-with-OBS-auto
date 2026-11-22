@@ -20,7 +20,7 @@ Videos\
 | 場面 | 保存 |
 |---|---|
 | 自分のキル | ○ |
-| 自分のアシスト | ○（`save_assist` でオフにできる） |
+| 自分のアシスト | ○（`save_assist` / `assist_only_support` で制御） |
 | ダブル〜ペンタキル | ○ |
 | 自チームのバロン、ドラゴン、エース | ○（`save_objectives` でオフにできる） |
 | 自分のデス | × |
@@ -132,10 +132,20 @@ flowchart LR
 | `pre_sec_multi` | マルチ：最後の検知より前の秒数 | `45` |
 | `post_sec_multi` | マルチ：検知から保存までの秒数（後ろ） | `15` |
 | `save_assist` | アシストも保存 | `true` |
+| `assist_only_support` | `true` のとき **UTILITY（サポート）** の試合だけアシスト保存 | `false` |
 | `save_objectives` | バロン・ドラゴン・エース | `true` |
 | `split_by_match` | 試合フォルダに分ける | `true` |
 
 **互換:** 昔の `replay_sec_single` / `replay_sec_multi` だけ書いてある場合は、`replay − post` を「前」として読みます。
+
+サポート中だけアシストを残す例:
+
+```json
+"save_assist": true,
+"assist_only_support": true
+```
+
+試合開始時に `playerlist` の `position` を参照します。ARAM などで `NONE` のときはアシストは保存されません。
 
 `config.json` を削除して起動すると、パスワード入力からやり直せます。
 
